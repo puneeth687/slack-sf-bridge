@@ -158,7 +158,7 @@ async function sendToSlack(responseUrl, message) {
 }
 
 function buildConfirmMessage(responseUrl, acc) {
-    const base = 'https://slack-sf-bridge.onrender.com';
+   const base = 'https://slack-sf-bridge-1.onrender.com';
     const enc = encodeURIComponent(responseUrl);
     return {
         response_type: 'ephemeral',
