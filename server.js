@@ -2,7 +2,6 @@ const express = require('express');
 const axios = require('axios');
 const qs = require('qs');
 const jwt = require('jsonwebtoken');
-const fs = require('fs');
 const app = express();
 
 app.use(express.urlencoded({ extended: true }));
@@ -75,6 +74,13 @@ async function deleteAccount(recordId, token) {
     );
 }
 
+async function sendToSlack(responseUrl, message) {
+    const decoded = decodeURIComponent(responseUrl);
+    await axios.post(decoded, message, {
+        headers: { 'Content-Type': 'application/json' }
+    });
+}
+
 function buildConfirmMessage(responseUrl, acc) {
     const base = 'https://slack-sf-bridge.onrender.com';
     const enc = encodeURIComponent(responseUrl);
@@ -129,46 +135,52 @@ app.post('/slack/delete', async (req, res) => {
 
     try {
         if (!text || !text.trim()) {
-            await axios.post(response_url, { response_type: 'ephemeral', text: ':warning: Please provide an Account Name.' });
+            await sendToSlack(response_url, { response_type: 'ephemeral', text: ':warning: Please provide an Account Name. Usage: `/delete-account Kasmo Digital`' });
             return;
         }
         const token = await getAccessToken();
         const accounts = await searchAccounts(text.trim(), token);
         if (!accounts || accounts.length === 0) {
-            await axios.post(response_url, { response_type: 'ephemeral', text: `:x: No Account found with name: *${text}*` });
+            await sendToSlack(response_url, { response_type: 'ephemeral', text: `:x: No Account found with name: *${text}*` });
             return;
         }
-        const msg = accounts.length > 1 ? buildMultipleMessage(response_url, accounts) : buildConfirmMessage(response_url, accounts[0]);
-        await axios.post(response_url, msg);
+        const msg = accounts.length > 1
+            ? buildMultipleMessage(response_url, accounts)
+            : buildConfirmMessage(response_url, accounts[0]);
+        await sendToSlack(response_url, msg);
     } catch (err) {
-        console.error('Error:', err.response?.data || err.message);
-        await axios.post(response_url, { response_type: 'ephemeral', text: `:x: Error: ${err.message}` });
+        console.error('Search error:', err.response?.data || err.message);
+        try {
+            await sendToSlack(response_url, { response_type: 'ephemeral', text: `:x: Error: ${err.message}` });
+        } catch(e) { console.error(e.message); }
     }
 });
 
-// Confirm
+// Confirm deletion
 app.get('/slack/confirm', async (req, res) => {
     const { recordId, accountName, responseUrl } = req.query;
-    res.send('Processing... you can close this tab.');
+    res.send('<h2>Processing deletion... you can close this tab.</h2>');
     try {
         const token = await getAccessToken();
         await deleteAccount(recordId, token);
-        await axios.post(decodeURIComponent(responseUrl), {
+        await sendToSlack(responseUrl, {
             response_type: 'ephemeral',
             text: `:white_check_mark: Account *${accountName}* deleted successfully!`
         });
     } catch (err) {
         console.error('Delete error:', err.response?.data || err.message);
-        await axios.post(decodeURIComponent(responseUrl), { response_type: 'ephemeral', text: `:x: Error: ${err.message}` });
+        try {
+            await sendToSlack(responseUrl, { response_type: 'ephemeral', text: `:x: Error deleting: ${err.message}` });
+        } catch(e) { console.error(e.message); }
     }
 });
 
-// Cancel
+// Cancel deletion
 app.get('/slack/cancel', async (req, res) => {
     const { accountName, responseUrl } = req.query;
-    res.send('Cancelled. You can close this tab.');
+    res.send('<h2>Deletion cancelled. You can close this tab.</h2>');
     try {
-        await axios.post(decodeURIComponent(responseUrl), {
+        await sendToSlack(responseUrl, {
             response_type: 'ephemeral',
             text: `:x: Deletion cancelled. *${accountName}* is safe! :relieved:`
         });
