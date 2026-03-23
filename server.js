@@ -71,52 +71,82 @@ async function deleteAccount(recordId, token) {
     const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
     const base = SF_BASE_URL + '/services/data/v59.0';
 
+    async function queryAndDelete(objectName, whereClause) {
+        try {
+            const res = await axios.get(`${base}/query?q=${encodeURIComponent(`SELECT Id FROM ${objectName} WHERE ${whereClause}`)}`, { headers });
+            const records = res.data.records;
+            console.log(`Found ${records.length} ${objectName} records`);
+            for (const r of records) {
+                try {
+                    await axios.delete(`${base}/sobjects/${objectName}/${r.Id}`, { headers });
+                    console.log(`Deleted ${objectName} ${r.Id}`);
+                } catch(e) {
+                    console.error(`Failed to delete ${objectName} ${r.Id}:`, JSON.stringify(e.response?.data));
+                }
+            }
+        } catch(e) {
+            console.error(`Failed to query ${objectName}:`, JSON.stringify(e.response?.data || e.message));
+        }
+    }
+
+    await queryAndDelete('Case', `AccountId = '${recordId}'`);
+    await queryAndDelete('ChannelProgramMember', `AccountId = '${recordId}'`);
+    
+    // Handle Opportunities specially
     try {
-        // 1. Delete Contacts
-        const contacts = await axios.get(`${base}/query?q=${encodeURIComponent(`SELECT Id FROM Contact WHERE AccountId = '${recordId}'`)}`, { headers });
-        for (const r of contacts.data.records) await axios.delete(`${base}/sobjects/Contact/${r.Id}`, { headers });
-
-        // 2. Delete Cases
-        const cases = await axios.get(`${base}/query?q=${encodeURIComponent(`SELECT Id FROM Case WHERE AccountId = '${recordId}'`)}`, { headers });
-        for (const r of cases.data.records) await axios.delete(`${base}/sobjects/Case/${r.Id}`, { headers });
-
-        // 3. Delete Channel Program Members
-        const cpms = await axios.get(`${base}/query?q=${encodeURIComponent(`SELECT Id FROM ChannelProgramMember WHERE AccountId = '${recordId}'`)}`, { headers });
-        for (const r of cpms.data.records) await axios.delete(`${base}/sobjects/ChannelProgramMember/${r.Id}`, { headers });
-
-        // 4. Unlock and Delete Opportunities (including Closed Won)
-        const opps = await axios.get(`${base}/query?q=${encodeURIComponent(`SELECT Id, IsClosed, IsWon FROM Opportunity WHERE AccountId = '${recordId}'`)}`, { headers });
+        const opps = await axios.get(`${base}/query?q=${encodeURIComponent(`SELECT Id, StageName FROM Opportunity WHERE AccountId = '${recordId}'`)}`, { headers });
+        console.log(`Found ${opps.data.records.length} Opportunities`);
         for (const r of opps.data.records) {
             try {
-                // Try to unlock closed opportunities
                 await axios.patch(`${base}/sobjects/Opportunity/${r.Id}`, { StageName: 'Needs Analysis' }, { headers });
-            } catch(e) { console.log('Could not unlock opp, trying direct delete'); }
-            await axios.delete(`${base}/sobjects/Opportunity/${r.Id}`, { headers });
+                console.log(`Unlocked Opportunity ${r.Id}`);
+            } catch(e) {
+                console.error(`Failed to unlock Opportunity ${r.Id}:`, JSON.stringify(e.response?.data));
+            }
+            try {
+                await axios.delete(`${base}/sobjects/Opportunity/${r.Id}`, { headers });
+                console.log(`Deleted Opportunity ${r.Id}`);
+            } catch(e) {
+                console.error(`Failed to delete Opportunity ${r.Id}:`, JSON.stringify(e.response?.data));
+            }
         }
+    } catch(e) {
+        console.error('Opp error:', e.message);
+    }
 
-        // 5. Deactivate and Delete Orders
-        const orders = await axios.get(`${base}/query?q=${encodeURIComponent(`SELECT Id, Status FROM Order WHERE AccountId = '${recordId}'`)}`, { headers });
+    await queryAndDelete('Contact', `AccountId = '${recordId}'`);
+    await queryAndDelete('Asset', `AccountId = '${recordId}'`);
+    
+    // Handle Orders
+    try {
+        const orders = await axios.get(`${base}/query?q=${encodeURIComponent(`SELECT Id FROM Order WHERE AccountId = '${recordId}'`)}`, { headers });
+        console.log(`Found ${orders.data.records.length} Orders`);
         for (const r of orders.data.records) {
             try {
                 await axios.patch(`${base}/sobjects/Order/${r.Id}`, { Status: 'Draft' }, { headers });
-            } catch(e) { console.log('Could not set order to draft'); }
-            await axios.delete(`${base}/sobjects/Order/${r.Id}`, { headers });
+            } catch(e) {
+                console.error(`Failed to set Order to Draft:`, JSON.stringify(e.response?.data));
+            }
+            try {
+                await axios.delete(`${base}/sobjects/Order/${r.Id}`, { headers });
+                console.log(`Deleted Order ${r.Id}`);
+            } catch(e) {
+                console.error(`Failed to delete Order:`, JSON.stringify(e.response?.data));
+            }
         }
+    } catch(e) {
+        console.error('Order error:', e.message);
+    }
 
-        // 6. Delete Contracts
-        const contracts = await axios.get(`${base}/query?q=${encodeURIComponent(`SELECT Id FROM Contract WHERE AccountId = '${recordId}'`)}`, { headers });
-        for (const r of contracts.data.records) await axios.delete(`${base}/sobjects/Contract/${r.Id}`, { headers });
+    await queryAndDelete('Contract', `AccountId = '${recordId}'`);
 
-        // 7. Delete Assets
-        const assets = await axios.get(`${base}/query?q=${encodeURIComponent(`SELECT Id FROM Asset WHERE AccountId = '${recordId}'`)}`, { headers });
-        for (const r of assets.data.records) await axios.delete(`${base}/sobjects/Asset/${r.Id}`, { headers });
-
-        // 8. Finally delete the Account
+    // Finally delete Account
+    try {
         await axios.delete(`${base}/sobjects/Account/${recordId}`, { headers });
-
-    } catch(err) {
-        console.error('Delete chain error:', err.response?.data || err.message);
-        throw err;
+        console.log('Account deleted successfully!');
+    } catch(e) {
+        console.error('Account delete failed:', JSON.stringify(e.response?.data));
+        throw e;
     }
 }
 
