@@ -68,35 +68,56 @@ async function searchAccounts(accountName, token) {
 }
 
 async function deleteAccount(recordId, token) {
-    const headers = { 'Authorization': `Bearer ${token}` };
+    const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
     const base = SF_BASE_URL + '/services/data/v59.0';
 
-    // 1. Delete Contacts
-    const contacts = await axios.get(`${base}/query?q=${encodeURIComponent(`SELECT Id FROM Contact WHERE AccountId = '${recordId}'`)}`, { headers });
-    for (const r of contacts.data.records) await axios.delete(`${base}/sobjects/Contact/${r.Id}`, { headers });
+    try {
+        // 1. Delete Contacts
+        const contacts = await axios.get(`${base}/query?q=${encodeURIComponent(`SELECT Id FROM Contact WHERE AccountId = '${recordId}'`)}`, { headers });
+        for (const r of contacts.data.records) await axios.delete(`${base}/sobjects/Contact/${r.Id}`, { headers });
 
-    // 2. Delete Opportunities
-    const opps = await axios.get(`${base}/query?q=${encodeURIComponent(`SELECT Id FROM Opportunity WHERE AccountId = '${recordId}'`)}`, { headers });
-    for (const r of opps.data.records) await axios.delete(`${base}/sobjects/Opportunity/${r.Id}`, { headers });
+        // 2. Delete Cases
+        const cases = await axios.get(`${base}/query?q=${encodeURIComponent(`SELECT Id FROM Case WHERE AccountId = '${recordId}'`)}`, { headers });
+        for (const r of cases.data.records) await axios.delete(`${base}/sobjects/Case/${r.Id}`, { headers });
 
-    // 3. Delete Cases
-    const cases = await axios.get(`${base}/query?q=${encodeURIComponent(`SELECT Id FROM Case WHERE AccountId = '${recordId}'`)}`, { headers });
-    for (const r of cases.data.records) await axios.delete(`${base}/sobjects/Case/${r.Id}`, { headers });
+        // 3. Delete Channel Program Members
+        const cpms = await axios.get(`${base}/query?q=${encodeURIComponent(`SELECT Id FROM ChannelProgramMember WHERE AccountId = '${recordId}'`)}`, { headers });
+        for (const r of cpms.data.records) await axios.delete(`${base}/sobjects/ChannelProgramMember/${r.Id}`, { headers });
 
-    // 4. Deactivate and Delete Orders
-    const orders = await axios.get(`${base}/query?q=${encodeURIComponent(`SELECT Id, Status FROM Order WHERE AccountId = '${recordId}'`)}`, { headers });
-    for (const r of orders.data.records) {
-        // First set to Draft so it can be deleted
-        await axios.patch(`${base}/sobjects/Order/${r.Id}`, { Status: 'Draft' }, { headers: { ...headers, 'Content-Type': 'application/json' } });
-        await axios.delete(`${base}/sobjects/Order/${r.Id}`, { headers });
+        // 4. Unlock and Delete Opportunities (including Closed Won)
+        const opps = await axios.get(`${base}/query?q=${encodeURIComponent(`SELECT Id, IsClosed, IsWon FROM Opportunity WHERE AccountId = '${recordId}'`)}`, { headers });
+        for (const r of opps.data.records) {
+            try {
+                // Try to unlock closed opportunities
+                await axios.patch(`${base}/sobjects/Opportunity/${r.Id}`, { StageName: 'Needs Analysis' }, { headers });
+            } catch(e) { console.log('Could not unlock opp, trying direct delete'); }
+            await axios.delete(`${base}/sobjects/Opportunity/${r.Id}`, { headers });
+        }
+
+        // 5. Deactivate and Delete Orders
+        const orders = await axios.get(`${base}/query?q=${encodeURIComponent(`SELECT Id, Status FROM Order WHERE AccountId = '${recordId}'`)}`, { headers });
+        for (const r of orders.data.records) {
+            try {
+                await axios.patch(`${base}/sobjects/Order/${r.Id}`, { Status: 'Draft' }, { headers });
+            } catch(e) { console.log('Could not set order to draft'); }
+            await axios.delete(`${base}/sobjects/Order/${r.Id}`, { headers });
+        }
+
+        // 6. Delete Contracts
+        const contracts = await axios.get(`${base}/query?q=${encodeURIComponent(`SELECT Id FROM Contract WHERE AccountId = '${recordId}'`)}`, { headers });
+        for (const r of contracts.data.records) await axios.delete(`${base}/sobjects/Contract/${r.Id}`, { headers });
+
+        // 7. Delete Assets
+        const assets = await axios.get(`${base}/query?q=${encodeURIComponent(`SELECT Id FROM Asset WHERE AccountId = '${recordId}'`)}`, { headers });
+        for (const r of assets.data.records) await axios.delete(`${base}/sobjects/Asset/${r.Id}`, { headers });
+
+        // 8. Finally delete the Account
+        await axios.delete(`${base}/sobjects/Account/${recordId}`, { headers });
+
+    } catch(err) {
+        console.error('Delete chain error:', err.response?.data || err.message);
+        throw err;
     }
-
-    // 5. Delete Contracts
-    const contracts = await axios.get(`${base}/query?q=${encodeURIComponent(`SELECT Id FROM Contract WHERE AccountId = '${recordId}'`)}`, { headers });
-    for (const r of contracts.data.records) await axios.delete(`${base}/sobjects/Contract/${r.Id}`, { headers });
-
-    // 6. Finally delete the Account
-    await axios.delete(`${base}/sobjects/Account/${recordId}`, { headers });
 }
 
 async function sendToSlack(responseUrl, message) {
