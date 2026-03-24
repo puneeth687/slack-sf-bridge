@@ -1,15 +1,15 @@
-const express = require('express');
-const axios = require('axios');
-const qs = require('qs');
-const jwt = require('jsonwebtoken');
+const express = require("express");
+const axios = require("axios");
+const qs = require("qs");
+const jwt = require("jsonwebtoken");
 const app = express();
 
-app.use(express.urlencoded({ extended: true }));
+app.use(express.urlencoded({extended: true}));
 app.use(express.json());
 
-const SF_BASE_URL = 'https://ka1727761468637.my.salesforce.com';
-const CONSUMER_KEY = '3MVG9VTfpJmxg1yjl829M_mPjACSCXX0bta2zOKi6PcnM7Yx2xAxTkAqv1yMxipjIU2WLRT6NqDHDDiIZ44T8';
-const USERNAME = 'puneeth.r@kasmodigital.com';
+const SF_BASE_URL = "https://ka1727761468637.my.salesforce.com";
+const CONSUMER_KEY = "3MVG9VTfpJmxg1yjl829M_mPjACSCXX0bta2zOKi6PcnM7Yx2xAxTkAqv1yMxipjIU2WLRT6NqDHDDiIZ44T8";
+const USERNAME = "puneeth.r@kasmodigital.com";
 const PRIVATE_KEY = `-----BEGIN PRIVATE KEY-----
 MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDdJmXyUNlzaH7I
 Exv8ED8R2/0182c5bemrXmnlmKUDEXGJDs+CWE1fLg3xT+1ML7tccf8keYLpAZ4T
@@ -43,200 +43,234 @@ async function getAccessToken() {
     const payload = {
         iss: CONSUMER_KEY,
         sub: USERNAME,
-        aud: 'https://login.salesforce.com',
-        exp: Math.floor(Date.now() / 1000) + 300
+        aud: "https://login.salesforce.com",
+        exp: Math.floor(Date.now() / 1000) + 300,
     };
-    const token = jwt.sign(payload, PRIVATE_KEY, { algorithm: 'RS256' });
+    const token = jwt.sign(payload, PRIVATE_KEY, {algorithm: "RS256"});
     const response = await axios.post(
-        'https://login.salesforce.com/services/oauth2/token',
+        "https://login.salesforce.com/services/oauth2/token",
         qs.stringify({
-            grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
-            assertion: token
+            grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+            assertion: token,
         }),
-        { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+        {headers: {"Content-Type": "application/x-www-form-urlencoded"}}
     );
     return response.data.access_token;
 }
 
 async function searchAccounts(accountName, token) {
     const query = `SELECT Id, Name, Phone, Industry, BillingCity FROM Account WHERE Name LIKE '%${accountName}%' LIMIT 10`;
-    const response = await axios.get(
-        `${SF_BASE_URL}/services/data/v59.0/query?q=${encodeURIComponent(query)}`,
-        { headers: { 'Authorization': `Bearer ${token}` } }
-    );
+    const response = await axios.get(`${SF_BASE_URL}/services/data/v59.0/query?q=${encodeURIComponent(query)}`, {
+        headers: {Authorization: `Bearer ${token}`},
+    });
     return response.data.records;
 }
 
 async function deleteAccount(recordId, token) {
-    const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
-    const base = SF_BASE_URL + '/services/data/v59.0';
+    const headers = {Authorization: `Bearer ${token}`, "Content-Type": "application/json"};
+    const base = SF_BASE_URL + "/services/data/v59.0";
 
     async function queryAndDelete(objectName, whereClause) {
         try {
-            const res = await axios.get(`${base}/query?q=${encodeURIComponent(`SELECT Id FROM ${objectName} WHERE ${whereClause}`)}`, { headers });
+            const res = await axios.get(
+                `${base}/query?q=${encodeURIComponent(`SELECT Id FROM ${objectName} WHERE ${whereClause}`)}`,
+                {headers}
+            );
             for (const r of res.data.records) {
-                try { await axios.delete(`${base}/sobjects/${objectName}/${r.Id}`, { headers }); } catch(e) {}
+                try {
+                    await axios.delete(`${base}/sobjects/${objectName}/${r.Id}`, {headers});
+                } catch (e) {}
             }
-        } catch(e) {}
+        } catch (e) {}
     }
 
     // Deactivate portal users and delete contacts
     try {
-        const contacts = await axios.get(`${base}/query?q=${encodeURIComponent(`SELECT Id FROM Contact WHERE AccountId = '${recordId}'`)}`, { headers });
+        const contacts = await axios.get(
+            `${base}/query?q=${encodeURIComponent(`SELECT Id FROM Contact WHERE AccountId = '${recordId}'`)}`,
+            {headers}
+        );
         for (const r of contacts.data.records) {
             try {
-                const users = await axios.get(`${base}/query?q=${encodeURIComponent(`SELECT Id FROM User WHERE ContactId = '${r.Id}'`)}`, { headers });
+                const users = await axios.get(
+                    `${base}/query?q=${encodeURIComponent(`SELECT Id FROM User WHERE ContactId = '${r.Id}'`)}`,
+                    {headers}
+                );
                 for (const u of users.data.records) {
-                    await axios.patch(`${base}/sobjects/User/${u.Id}`, { IsActive: false }, { headers });
+                    await axios.patch(`${base}/sobjects/User/${u.Id}`, {IsActive: false}, {headers});
                 }
-            } catch(e) {}
-            try { await axios.delete(`${base}/sobjects/Contact/${r.Id}`, { headers }); } catch(e) {}
+            } catch (e) {}
+            try {
+                await axios.delete(`${base}/sobjects/Contact/${r.Id}`, {headers});
+            } catch (e) {}
         }
-    } catch(e) {}
+    } catch (e) {}
 
-    await queryAndDelete('Case', `AccountId = '${recordId}'`);
-    await queryAndDelete('Asset', `AccountId = '${recordId}'`);
+    await queryAndDelete("Case", `AccountId = '${recordId}'`);
+    await queryAndDelete("Asset", `AccountId = '${recordId}'`);
 
     // Opportunities
     try {
-        const opps = await axios.get(`${base}/query?q=${encodeURIComponent(`SELECT Id FROM Opportunity WHERE AccountId = '${recordId}'`)}`, { headers });
+        const opps = await axios.get(
+            `${base}/query?q=${encodeURIComponent(`SELECT Id FROM Opportunity WHERE AccountId = '${recordId}'`)}`,
+            {headers}
+        );
         for (const r of opps.data.records) {
-            try { await axios.patch(`${base}/sobjects/Opportunity/${r.Id}`, { StageName: 'Needs Analysis' }, { headers }); } catch(e) {}
-            try { await axios.delete(`${base}/sobjects/Opportunity/${r.Id}`, { headers }); } catch(e) {}
+            try {
+                await axios.patch(`${base}/sobjects/Opportunity/${r.Id}`, {StageName: "Needs Analysis"}, {headers});
+            } catch (e) {}
+            try {
+                await axios.delete(`${base}/sobjects/Opportunity/${r.Id}`, {headers});
+            } catch (e) {}
         }
-    } catch(e) {}
+    } catch (e) {}
 
     // Orders
     try {
-        const orders = await axios.get(`${base}/query?q=${encodeURIComponent(`SELECT Id FROM Order WHERE AccountId = '${recordId}'`)}`, { headers });
+        const orders = await axios.get(
+            `${base}/query?q=${encodeURIComponent(`SELECT Id FROM Order WHERE AccountId = '${recordId}'`)}`,
+            {headers}
+        );
         for (const r of orders.data.records) {
-            try { await axios.patch(`${base}/sobjects/Order/${r.Id}`, { Status: 'Draft' }, { headers }); } catch(e) {}
-            try { await axios.delete(`${base}/sobjects/Order/${r.Id}`, { headers }); } catch(e) {}
+            try {
+                await axios.patch(`${base}/sobjects/Order/${r.Id}`, {Status: "Draft"}, {headers});
+            } catch (e) {}
+            try {
+                await axios.delete(`${base}/sobjects/Order/${r.Id}`, {headers});
+            } catch (e) {}
         }
-    } catch(e) {}
+    } catch (e) {}
 
-    await queryAndDelete('Contract', `AccountId = '${recordId}'`);
-    await axios.delete(`${base}/sobjects/Account/${recordId}`, { headers });
+    await queryAndDelete("Contract", `AccountId = '${recordId}'`);
+    await axios.delete(`${base}/sobjects/Account/${recordId}`, {headers});
 }
 
 async function sendToSlack(responseUrl, message) {
     await axios.post(responseUrl, message, {
-        headers: { 'Content-Type': 'application/json' }
+        headers: {"Content-Type": "application/json"},
     });
 }
 
 function buildConfirmMessage(acc) {
     return {
-        response_type: 'ephemeral',
-        text: ':warning: Are you sure you want to delete this Account?',
-        attachments: [{
-            color: '#FF0000',
-            fields: [
-                { title: 'Name', value: acc.Name || 'N/A', short: true },
-                { title: 'Phone', value: acc.Phone || 'N/A', short: true },
-                { title: 'Industry', value: acc.Industry || 'N/A', short: true },
-                { title: 'City', value: acc.BillingCity || 'N/A', short: true }
-            ],
-            actions: [
-                {
-                    type: 'button',
-                    text: '✅ Yes, Delete',
-                    style: 'danger',
-                    name: 'action',
-                    value: `confirm|${acc.Id}|${acc.Name}`
-                },
-                {
-                    type: 'button',
-                    text: '❌ No, Cancel',
-                    name: 'action',
-                    value: `cancel|${acc.Id}|${acc.Name}`
-                }
-            ],
-            callback_id: 'delete_account'
-        }]
+        response_type: "ephemeral",
+        text: ":warning: Are you sure you want to delete this Account?",
+        attachments: [
+            {
+                color: "#FF0000",
+                fields: [
+                    {title: "Name", value: acc.Name || "N/A", short: true},
+                    {title: "Phone", value: acc.Phone || "N/A", short: true},
+                    {title: "Industry", value: acc.Industry || "N/A", short: true},
+                    {title: "City", value: acc.BillingCity || "N/A", short: true},
+                ],
+                actions: [
+                    {
+                        type: "button",
+                        text: "✅ Yes, Delete",
+                        style: "danger",
+                        name: "action",
+                        value: `confirm|${acc.Id}|${acc.Name}`,
+                    },
+                    {
+                        type: "button",
+                        text: "❌ No, Cancel",
+                        name: "action",
+                        value: `cancel|${acc.Id}|${acc.Name}`,
+                    },
+                ],
+                callback_id: "delete_account",
+            },
+        ],
     };
 }
 
 function buildMultipleMessage(accounts) {
     return {
-        response_type: 'ephemeral',
-        text: ':mag: Multiple accounts found! Choose one to delete:',
-        attachments: accounts.map(acc => ({
-            color: '#FF8C00',
+        response_type: "ephemeral",
+        text: ":mag: Multiple accounts found! Choose one to delete:",
+        attachments: accounts.map((acc) => ({
+            color: "#FF8C00",
             fields: [
-                { title: 'Name', value: acc.Name || 'N/A', short: true },
-                { title: 'Industry', value: acc.Industry || 'N/A', short: true },
-                { title: 'City', value: acc.BillingCity || 'N/A', short: true }
+                {title: "Name", value: acc.Name || "N/A", short: true},
+                {title: "Industry", value: acc.Industry || "N/A", short: true},
+                {title: "City", value: acc.BillingCity || "N/A", short: true},
             ],
             actions: [
                 {
-                    type: 'button',
+                    type: "button",
                     text: `✅ Delete ${acc.Name}`,
-                    style: 'danger',
-                    name: 'action',
-                    value: `confirm|${acc.Id}|${acc.Name}`
+                    style: "danger",
+                    name: "action",
+                    value: `confirm|${acc.Id}|${acc.Name}`,
                 },
                 {
-                    type: 'button',
-                    text: '❌ Cancel',
-                    name: 'action',
-                    value: `cancel|${acc.Id}|${acc.Name}`
-                }
+                    type: "button",
+                    text: "❌ Cancel",
+                    name: "action",
+                    value: `cancel|${acc.Id}|${acc.Name}`,
+                },
             ],
-            callback_id: 'delete_account'
-        }))
+            callback_id: "delete_account",
+        })),
     };
 }
 
 // Slash command
-app.post('/slack/delete', async (req, res) => {
-    const { text, response_url } = req.body;
-    res.json({ response_type: 'ephemeral', text: ':hourglass_flowing_sand: Processing your request...' });
+app.post("/slack/delete", async (req, res) => {
+    const {text, response_url} = req.body;
+    res.json({response_type: "ephemeral", text: ":hourglass_flowing_sand: Processing your request..."});
 
     try {
         if (!text || !text.trim()) {
-            await sendToSlack(response_url, { response_type: 'ephemeral', text: ':warning: Please provide an Account Name.' });
+            await sendToSlack(response_url, {
+                response_type: "ephemeral",
+                text: ":warning: Please provide an Account Name.",
+            });
             return;
         }
         const token = await getAccessToken();
         const accounts = await searchAccounts(text.trim(), token);
         if (!accounts || accounts.length === 0) {
-            await sendToSlack(response_url, { response_type: 'ephemeral', text: `:x: No Account found with name: *${text}*` });
+            await sendToSlack(response_url, {
+                response_type: "ephemeral",
+                text: `:x: No Account found with name: *${text}*`,
+            });
             return;
         }
-        const msg = accounts.length > 1
-            ? buildMultipleMessage(accounts)
-            : buildConfirmMessage(accounts[0]);
+        const msg = accounts.length > 1 ? buildMultipleMessage(accounts) : buildConfirmMessage(accounts[0]);
         await sendToSlack(response_url, msg);
     } catch (err) {
-        console.error('Search error:', err.response?.data || err.message);
-        try { await sendToSlack(response_url, { response_type: 'ephemeral', text: `:x: Error: ${err.message}` }); } catch(e) {}
+        console.error("Search error:", err.response?.data || err.message);
+        try {
+            await sendToSlack(response_url, {response_type: "ephemeral", text: `:x: Error: ${err.message}`});
+        } catch (e) {}
     }
 });
 
 // Interactive button handler — no more browser tab!
-app.post('/slack/interact', async (req, res) => {
+app.post("/slack/interact", async (req, res) => {
     const payload = JSON.parse(req.body.payload);
     const action = payload.actions[0].value;
     const responseUrl = payload.response_url;
 
-    const [actionType, recordId, accountName] = action.split('|');
+    const [actionType, recordId, accountName] = action.split("|");
 
     // Immediately respond to Slack — removes buttons, stays in Slack!
-    if (actionType === 'cancel') {
+    if (actionType === "cancel") {
         res.json({
-            response_type: 'ephemeral',
+            response_type: "ephemeral",
             replace_original: true,
-            text: `:x: Deletion cancelled. *${accountName}* is safe! :relieved:`
+            text: `:x: Deletion cancelled. *${accountName}* is safe! :relieved:`,
         });
         return;
     }
 
     // For confirm — immediately show processing message
     res.json({
-        response_type: 'ephemeral',
+        response_type: "ephemeral",
         replace_original: true,
-        text: `:hourglass_flowing_sand: Deleting *${accountName}*...`
+        text: `:hourglass_flowing_sand: Deleting *${accountName}*...`,
     });
 
     // Then do the actual deletion async
@@ -244,20 +278,20 @@ app.post('/slack/interact', async (req, res) => {
         const token = await getAccessToken();
         await deleteAccount(recordId, token);
         await sendToSlack(responseUrl, {
-            response_type: 'ephemeral',
-            replace_original: true,
-            text: `:white_check_mark: Account *${accountName}* deleted successfully!`
+            response_type: "in_channel",
+            replace_original: false,
+            text: `:white_check_mark: *${accountName}* was deleted successfully by <@${payload.user.id}>`,
         });
     } catch (err) {
-        console.error('Delete error:', err.response?.data || err.message);
+        console.error("Delete error:", err.response?.data || err.message);
         try {
             await sendToSlack(responseUrl, {
-                response_type: 'ephemeral',
+                response_type: "ephemeral",
                 replace_original: true,
-                text: `:x: Error deleting: ${err.message}`
+                text: `:x: Error deleting: ${err.message}`,
             });
-        } catch(e) {}
+        } catch (e) {}
     }
 });
 
-app.listen(process.env.PORT || 3000, () => console.log('Server running on port 3000'));
+app.listen(process.env.PORT || 3000, () => console.log("Server running on port 3000"));
