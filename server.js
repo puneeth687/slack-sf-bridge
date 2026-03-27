@@ -39,6 +39,9 @@ tU+RvF3jmq7yMbXoa1MVNtx66R+20c2HrE05M/ejjezTEwYa6/+/Z4cxOjHQqQp8
 I6vfZazKtH01KvyXQ7N1OHA=
 -----END PRIVATE KEY-----`;
 
+// ─────────────────────────────────────────
+// AUTH
+// ─────────────────────────────────────────
 async function getAccessToken() {
     const payload = {
         iss: CONSUMER_KEY,
@@ -58,26 +61,86 @@ async function getAccessToken() {
     return response.data.access_token;
 }
 
-async function searchAccounts(accountName, token) {
-    const query = `SELECT Id, Name, Phone, Industry, BillingCity FROM Account WHERE Name LIKE '%${accountName}%' LIMIT 10`;
+// ─────────────────────────────────────────
+// SEARCH FUNCTIONS
+// ─────────────────────────────────────────
+async function searchRecords(objectType, searchText, token) {
+    const headers = {Authorization: `Bearer ${token}`};
+    const base = SF_BASE_URL + "/services/data/v59.0";
+    let query = '';
+
+    if (objectType === '/delete-account') {
+        query = `SELECT Id, Name, Phone, Industry, BillingCity FROM Account WHERE Name LIKE '%${searchText}%' LIMIT 10`;
+    } else if (objectType === '/delete-contact') {
+        query = `SELECT Id, Name, Phone, Email, Account.Name FROM Contact WHERE Name LIKE '%${searchText}%' LIMIT 10`;
+    } else if (objectType === '/delete-opportunity') {
+        query = `SELECT Id, Name, CloseDate, Amount, StageName, Account.Name FROM Opportunity WHERE Name LIKE '%${searchText}%' LIMIT 10`;
+    } else if (objectType === '/delete-lead') {
+        query = `SELECT Id, Name, Company, LeadSource, Industry FROM Lead WHERE Name LIKE '%${searchText}%' LIMIT 10`;
+    }
+
     const response = await axios.get(
-        `${SF_BASE_URL}/services/data/v59.0/query?q=${encodeURIComponent(query)}`,
-        {headers: {Authorization: `Bearer ${token}`}}
+        `${base}/query?q=${encodeURIComponent(query)}`,
+        {headers}
     );
     return response.data.records;
 }
 
 // ─────────────────────────────────────────
-// SMART RECURSIVE DELETE
+// CHECK PORTAL USER
+// ─────────────────────────────────────────
+async function hasPortalUser(contactId, token) {
+    const headers = {Authorization: `Bearer ${token}`};
+    const base = SF_BASE_URL + "/services/data/v59.0";
+    try {
+        const res = await axios.get(
+            `${base}/query?q=${encodeURIComponent(`SELECT Id FROM User WHERE ContactId = '${contactId}' AND IsActive = true LIMIT 1`)}`,
+            {headers}
+        );
+        return res.data.records.length > 0;
+    } catch(e) { return false; }
+}
+
+// ─────────────────────────────────────────
+// DELETE FUNCTIONS
 // ─────────────────────────────────────────
 
-// Known objects that need special handling before delete
-const SPECIAL_HANDLERS = {
-    'Contact': async (headers, base, recordId) => {
-        // Deactivate portal users first
+// Smart recursive delete for Account
+function parseBlockingObjects(errorMessage) {
+    const blocking = [];
+    const pattern = /associated with the following ([^.:]+)[.:]/gi;
+    let match;
+    while ((match = pattern.exec(errorMessage)) !== null) {
+        blocking.push(match[1].trim());
+    }
+    if (/closed won/i.test(errorMessage)) blocking.push('opportunities');
+    if (/portal users/i.test(errorMessage)) blocking.push('contacts');
+    return [...new Set(blocking)];
+}
+
+function resolveObjectName(raw) {
+    const map = {
+        'cases': 'Case', 'case': 'Case',
+        'contacts': 'Contact', 'contact': 'Contact',
+        'opportunities': 'Opportunity', 'opportunity': 'Opportunity',
+        'orders': 'Order', 'order': 'Order',
+        'contracts': 'Contract', 'contract': 'Contract',
+        'assets': 'Asset', 'asset': 'Asset',
+        'entitlements': 'Entitlement', 'entitlement': 'Entitlement',
+        'service contracts': 'ServiceContract',
+        'channel program members': 'ChannelProgramMember',
+        'portal users': 'Contact',
+        'active orders': 'Order',
+        'sales agreements': 'Asset',
+    };
+    return map[raw.toLowerCase()] || null;
+}
+
+async function deleteRelated(objectName, accountId, headers, base) {
+    if (objectName === 'Contact') {
         try {
             const contacts = await axios.get(
-                `${base}/query?q=${encodeURIComponent(`SELECT Id FROM Contact WHERE AccountId = '${recordId}'`)}`,
+                `${base}/query?q=${encodeURIComponent(`SELECT Id FROM Contact WHERE AccountId = '${accountId}'`)}`,
                 {headers}
             );
             for (const r of contacts.data.records) {
@@ -93,12 +156,12 @@ const SPECIAL_HANDLERS = {
                 try { await axios.delete(`${base}/sobjects/Contact/${r.Id}`, {headers}); } catch(e) {}
             }
         } catch(e) {}
-    },
-    'Order': async (headers, base, recordId) => {
-        // Set to Draft before deleting
+        return;
+    }
+    if (objectName === 'Order') {
         try {
             const orders = await axios.get(
-                `${base}/query?q=${encodeURIComponent(`SELECT Id FROM Order WHERE AccountId = '${recordId}'`)}`,
+                `${base}/query?q=${encodeURIComponent(`SELECT Id FROM Order WHERE AccountId = '${accountId}'`)}`,
                 {headers}
             );
             for (const r of orders.data.records) {
@@ -106,12 +169,12 @@ const SPECIAL_HANDLERS = {
                 try { await axios.delete(`${base}/sobjects/Order/${r.Id}`, {headers}); } catch(e) {}
             }
         } catch(e) {}
-    },
-    'Opportunity': async (headers, base, recordId) => {
-        // Unlock closed won opps first
+        return;
+    }
+    if (objectName === 'Opportunity') {
         try {
             const opps = await axios.get(
-                `${base}/query?q=${encodeURIComponent(`SELECT Id FROM Opportunity WHERE AccountId = '${recordId}'`)}`,
+                `${base}/query?q=${encodeURIComponent(`SELECT Id FROM Opportunity WHERE AccountId = '${accountId}'`)}`,
                 {headers}
             );
             for (const r of opps.data.records) {
@@ -119,12 +182,12 @@ const SPECIAL_HANDLERS = {
                 try { await axios.delete(`${base}/sobjects/Opportunity/${r.Id}`, {headers}); } catch(e) {}
             }
         } catch(e) {}
-    },
-    'ServiceContract': async (headers, base, recordId) => {
-        // Delete line items first
+        return;
+    }
+    if (objectName === 'ServiceContract') {
         try {
             const scs = await axios.get(
-                `${base}/query?q=${encodeURIComponent(`SELECT Id FROM ServiceContract WHERE AccountId = '${recordId}'`)}`,
+                `${base}/query?q=${encodeURIComponent(`SELECT Id FROM ServiceContract WHERE AccountId = '${accountId}'`)}`,
                 {headers}
             );
             for (const r of scs.data.records) {
@@ -140,66 +203,9 @@ const SPECIAL_HANDLERS = {
                 try { await axios.delete(`${base}/sobjects/ServiceContract/${r.Id}`, {headers}); } catch(e) {}
             }
         } catch(e) {}
-    }
-};
-
-// Parse Salesforce error to extract blocking object names and record IDs
-function parseBlockingObjects(errorMessage) {
-    const blocking = [];
-
-    // Pattern: "associated with the following <object plural>.: <ids>"
-    const pattern = /associated with the following ([^.:]+)[.:]/gi;
-    let match;
-    while ((match = pattern.exec(errorMessage)) !== null) {
-        const rawName = match[1].trim();
-        blocking.push(rawName);
-    }
-
-    // Pattern: "some opportunities in that account were closed won"
-    if (/closed won/i.test(errorMessage)) blocking.push('opportunities');
-
-    // Pattern: "portal users"
-    if (/portal users/i.test(errorMessage)) blocking.push('contacts');
-
-    return [...new Set(blocking)];
-}
-
-// Map plural/description to Salesforce API object name
-function resolveObjectName(raw) {
-    const map = {
-        'cases': 'Case',
-        'case': 'Case',
-        'contacts': 'Contact',
-        'contact': 'Contact',
-        'opportunities': 'Opportunity',
-        'opportunity': 'Opportunity',
-        'orders': 'Order',
-        'order': 'Order',
-        'contracts': 'Contract',
-        'contract': 'Contract',
-        'assets': 'Asset',
-        'asset': 'Asset',
-        'entitlements': 'Entitlement',
-        'entitlement': 'Entitlement',
-        'service contracts': 'ServiceContract',
-        'service contract': 'ServiceContract',
-        'channel program members': 'ChannelProgramMember',
-        'channel program member': 'ChannelProgramMember',
-        'portal users': 'Contact',
-        'active orders': 'Order',
-        'sales agreements': 'Asset',
-    };
-    return map[raw.toLowerCase()] || null;
-}
-
-// Generic delete all related records by AccountId
-async function deleteRelated(objectName, accountId, headers, base) {
-    // Use special handler if available
-    if (SPECIAL_HANDLERS[objectName]) {
-        await SPECIAL_HANDLERS[objectName](headers, base, accountId);
         return;
     }
-    // Generic delete by AccountId
+    // Generic
     try {
         const res = await axios.get(
             `${base}/query?q=${encodeURIComponent(`SELECT Id FROM ${objectName} WHERE AccountId = '${accountId}'`)}`,
@@ -208,13 +214,10 @@ async function deleteRelated(objectName, accountId, headers, base) {
         for (const r of res.data.records) {
             try { await axios.delete(`${base}/sobjects/${objectName}/${r.Id}`, {headers}); } catch(e) {}
         }
-    } catch(e) {
-        console.log(`Could not delete ${objectName} by AccountId, trying other fields...`);
-    }
+    } catch(e) {}
 }
 
-// SMART RECURSIVE DELETE — max 10 attempts
-async function deleteAccount(recordId, token) {
+async function smartDeleteAccount(recordId, token) {
     const headers = {Authorization: `Bearer ${token}`, "Content-Type": "application/json"};
     const base = SF_BASE_URL + "/services/data/v59.0";
     const maxAttempts = 10;
@@ -222,141 +225,256 @@ async function deleteAccount(recordId, token) {
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
-            // Try to delete the account
             await axios.delete(`${base}/sobjects/Account/${recordId}`, {headers});
-            console.log(`✅ Account ${recordId} deleted successfully on attempt ${attempt}`);
-            return; // SUCCESS!
-
+            console.log(`✅ Account deleted on attempt ${attempt}`);
+            return;
         } catch (err) {
             const errorData = err.response?.data;
             const errorMessage = Array.isArray(errorData)
                 ? errorData.map(e => e.message).join(' ')
                 : err.message;
-
-            console.log(`Attempt ${attempt} failed: ${errorMessage}`);
-
-            // Extract what's blocking
             const blockingRaw = parseBlockingObjects(errorMessage);
-            console.log('Blocking objects detected:', blockingRaw);
-
-            if (blockingRaw.length === 0) {
-                // No recognizable blocker — throw the error
-                throw err;
-            }
-
-            // Delete each blocking object
+            if (blockingRaw.length === 0) throw err;
             let deletedSomething = false;
             for (const raw of blockingRaw) {
                 const objectName = resolveObjectName(raw);
-                if (!objectName) {
-                    console.log(`Unknown object: ${raw} — skipping`);
-                    continue;
-                }
-                if (deletedObjects.has(objectName)) {
-                    console.log(`Already tried deleting ${objectName} — skipping`);
-                    continue;
-                }
-                console.log(`Deleting blocking object: ${objectName}`);
+                if (!objectName || deletedObjects.has(objectName)) continue;
                 await deleteRelated(objectName, recordId, headers, base);
                 deletedObjects.add(objectName);
                 deletedSomething = true;
             }
-
-            if (!deletedSomething) {
-                // Nothing new to delete — give up
-                throw err;
-            }
-
-            // Small delay before retrying
+            if (!deletedSomething) throw err;
             await new Promise(resolve => setTimeout(resolve, 500));
         }
     }
-
     throw new Error(`Could not delete account after ${maxAttempts} attempts`);
 }
 
+async function deleteContact(recordId, token) {
+    const headers = {Authorization: `Bearer ${token}`, "Content-Type": "application/json"};
+    const base = SF_BASE_URL + "/services/data/v59.0";
+    // Deactivate portal user first
+    try {
+        const users = await axios.get(
+            `${base}/query?q=${encodeURIComponent(`SELECT Id FROM User WHERE ContactId = '${recordId}'`)}`,
+            {headers}
+        );
+        for (const u of users.data.records) {
+            try { await axios.patch(`${base}/sobjects/User/${u.Id}`, {IsActive: false}, {headers}); } catch(e) {}
+        }
+    } catch(e) {}
+    await axios.delete(`${base}/sobjects/Contact/${recordId}`, {headers});
+}
+
+async function deleteOpportunity(recordId, token) {
+    const headers = {Authorization: `Bearer ${token}`, "Content-Type": "application/json"};
+    const base = SF_BASE_URL + "/services/data/v59.0";
+    // Unlock if closed won
+    try { await axios.patch(`${base}/sobjects/Opportunity/${recordId}`, {StageName: 'Needs Analysis'}, {headers}); } catch(e) {}
+    await axios.delete(`${base}/sobjects/Opportunity/${recordId}`, {headers});
+}
+
+async function deleteLead(recordId, token) {
+    const headers = {Authorization: `Bearer ${token}`, "Content-Type": "application/json"};
+    const base = SF_BASE_URL + "/services/data/v59.0";
+    await axios.delete(`${base}/sobjects/Lead/${recordId}`, {headers});
+}
+
+// ─────────────────────────────────────────
+// SLACK HELPERS
+// ─────────────────────────────────────────
 async function sendToSlack(responseUrl, message) {
     await axios.post(responseUrl, message, {
         headers: {"Content-Type": "application/json"},
     });
 }
 
-function buildConfirmMessage(acc) {
+function buildConfirmMessage(objectType, rec) {
+    let fields = [];
+    let title = '';
+    let recordName = rec.Name;
+
+    if (objectType === '/delete-account') {
+        title = '⚠️ Are you sure you want to delete this Account?';
+        fields = [
+            {title: 'Name', value: rec.Name || 'N/A', short: true},
+            {title: 'Phone', value: rec.Phone || 'N/A', short: true},
+            {title: 'Industry', value: rec.Industry || 'N/A', short: true},
+            {title: 'City', value: rec.BillingCity || 'N/A', short: true},
+        ];
+    } else if (objectType === '/delete-contact') {
+        title = '⚠️ Are you sure you want to delete this Contact?';
+        fields = [
+            {title: 'Name', value: rec.Name || 'N/A', short: true},
+            {title: 'Phone', value: rec.Phone || 'N/A', short: true},
+            {title: 'Email', value: rec.Email || 'N/A', short: true},
+            {title: 'Account Name', value: rec.Account?.Name || 'N/A', short: true},
+        ];
+    } else if (objectType === '/delete-opportunity') {
+        title = '⚠️ Are you sure you want to delete this Opportunity?';
+        fields = [
+            {title: 'Opportunity Name', value: rec.Name || 'N/A', short: true},
+            {title: 'Stage', value: rec.StageName || 'N/A', short: true},
+            {title: 'Close Date', value: rec.CloseDate || 'N/A', short: true},
+            {title: 'Amount', value: rec.Amount ? `$${rec.Amount.toLocaleString()}` : 'N/A', short: true},
+            {title: 'Account Name', value: rec.Account?.Name || 'N/A', short: true},
+        ];
+    } else if (objectType === '/delete-lead') {
+        title = '⚠️ Are you sure you want to delete this Lead?';
+        fields = [
+            {title: 'Name', value: rec.Name || 'N/A', short: true},
+            {title: 'Company', value: rec.Company || 'N/A', short: true},
+            {title: 'Lead Source', value: rec.LeadSource || 'N/A', short: true},
+            {title: 'Industry', value: rec.Industry || 'N/A', short: true},
+        ];
+    }
+
     return {
-        response_type: "ephemeral",
-        text: ":warning: Are you sure you want to delete this Account?",
+        response_type: 'ephemeral',
+        text: title,
         attachments: [{
-            color: "#FF0000",
-            fields: [
-                {title: "Name", value: acc.Name || "N/A", short: true},
-                {title: "Phone", value: acc.Phone || "N/A", short: true},
-                {title: "Industry", value: acc.Industry || "N/A", short: true},
-                {title: "City", value: acc.BillingCity || "N/A", short: true},
-            ],
+            color: '#FF0000',
+            fields,
             actions: [
-                {type: "button", text: "✅ Yes, Delete", style: "danger", name: "action", value: `confirm|${acc.Id}|${acc.Name}`},
-                {type: "button", text: "❌ No, Cancel", name: "action", value: `cancel|${acc.Id}|${acc.Name}`},
+                {type: 'button', text: '✅ Yes, Delete', style: 'danger', name: 'action', value: `confirm|${rec.Id}|${recordName}|${objectType}`},
+                {type: 'button', text: '❌ No, Cancel', name: 'action', value: `cancel|${rec.Id}|${recordName}|${objectType}`},
             ],
-            callback_id: "delete_account",
+            callback_id: 'delete_record',
         }],
     };
 }
 
-function buildMultipleMessage(accounts) {
+function buildPortalWarningMessage(rec) {
     return {
-        response_type: "ephemeral",
-        text: ":mag: Multiple accounts found! Choose one to delete:",
-        attachments: accounts.map((acc) => ({
-            color: "#FF8C00",
+        response_type: 'ephemeral',
+        text: ':warning: *This contact has an active portal user!* Deleting will also deactivate their portal access. Are you sure?',
+        attachments: [{
+            color: '#FF8C00',
             fields: [
-                {title: "Name", value: acc.Name || "N/A", short: true},
-                {title: "Industry", value: acc.Industry || "N/A", short: true},
-                {title: "City", value: acc.BillingCity || "N/A", short: true},
+                {title: 'Name', value: rec.Name || 'N/A', short: true},
+                {title: 'Phone', value: rec.Phone || 'N/A', short: true},
+                {title: 'Email', value: rec.Email || 'N/A', short: true},
+                {title: 'Account Name', value: rec.Account?.Name || 'N/A', short: true},
             ],
             actions: [
-                {type: "button", text: `✅ Delete ${acc.Name}`, style: "danger", name: "action", value: `confirm|${acc.Id}|${acc.Name}`},
-                {type: "button", text: "❌ Cancel", name: "action", value: `cancel|${acc.Id}|${acc.Name}`},
+                {type: 'button', text: '✅ Yes, Delete & Deactivate Portal', style: 'danger', name: 'action', value: `confirm|${rec.Id}|${rec.Name}|/delete-contact`},
+                {type: 'button', text: '❌ No, Cancel', name: 'action', value: `cancel|${rec.Id}|${rec.Name}|/delete-contact`},
             ],
-            callback_id: "delete_account",
-        })),
+            callback_id: 'delete_record',
+        }],
     };
 }
 
-// Slash command
+function buildMultipleMessage(objectType, records) {
+    return {
+        response_type: 'ephemeral',
+        text: ':mag: Multiple records found! Choose one to delete:',
+        attachments: records.map(rec => {
+            let fields = [];
+            if (objectType === '/delete-account') {
+                fields = [
+                    {title: 'Name', value: rec.Name || 'N/A', short: true},
+                    {title: 'Industry', value: rec.Industry || 'N/A', short: true},
+                    {title: 'City', value: rec.BillingCity || 'N/A', short: true},
+                ];
+            } else if (objectType === '/delete-contact') {
+                fields = [
+                    {title: 'Name', value: rec.Name || 'N/A', short: true},
+                    {title: 'Email', value: rec.Email || 'N/A', short: true},
+                    {title: 'Account', value: rec.Account?.Name || 'N/A', short: true},
+                ];
+            } else if (objectType === '/delete-opportunity') {
+                fields = [
+                    {title: 'Name', value: rec.Name || 'N/A', short: true},
+                    {title: 'Stage', value: rec.StageName || 'N/A', short: true},
+                    {title: 'Account', value: rec.Account?.Name || 'N/A', short: true},
+                ];
+            } else if (objectType === '/delete-lead') {
+                fields = [
+                    {title: 'Name', value: rec.Name || 'N/A', short: true},
+                    {title: 'Company', value: rec.Company || 'N/A', short: true},
+                ];
+            }
+            return {
+                color: '#FF8C00',
+                fields,
+                actions: [
+                    {type: 'button', text: `✅ Delete ${rec.Name}`, style: 'danger', name: 'action', value: `confirm|${rec.Id}|${rec.Name}|${objectType}`},
+                    {type: 'button', text: '❌ Cancel', name: 'action', value: `cancel|${rec.Id}|${rec.Name}|${objectType}`},
+                ],
+                callback_id: 'delete_record',
+            };
+        }),
+    };
+}
+
+// ─────────────────────────────────────────
+// SLASH COMMAND HANDLER
+// ─────────────────────────────────────────
 app.post("/slack/delete", async (req, res) => {
-    const {text, response_url} = req.body;
+    const {text, response_url, command} = req.body;
+    const objectType = command; // /delete-account, /delete-contact etc.
+
     res.json({response_type: "ephemeral", text: ":hourglass_flowing_sand: Processing your request..."});
+
     try {
         if (!text || !text.trim()) {
-            await sendToSlack(response_url, {response_type: "ephemeral", text: ":warning: Please provide an Account Name."});
+            await sendToSlack(response_url, {
+                response_type: "ephemeral",
+                text: `:warning: Please provide a name. Usage: \`${command} John Smith\``,
+            });
             return;
         }
+
         const token = await getAccessToken();
-        const accounts = await searchAccounts(text.trim(), token);
-        if (!accounts || accounts.length === 0) {
-            await sendToSlack(response_url, {response_type: "ephemeral", text: `:x: No Account found with name: *${text}*`});
+        const records = await searchRecords(objectType, text.trim(), token);
+
+        if (!records || records.length === 0) {
+            await sendToSlack(response_url, {
+                response_type: "ephemeral",
+                text: `:x: No record found with name: *${text}*`,
+            });
             return;
         }
-        const msg = accounts.length > 1 ? buildMultipleMessage(accounts) : buildConfirmMessage(accounts[0]);
+
+        // Special case: Contact with portal user warning
+        if (objectType === '/delete-contact' && records.length === 1) {
+            const portalExists = await hasPortalUser(records[0].Id, token);
+            if (portalExists) {
+                await sendToSlack(response_url, buildPortalWarningMessage(records[0]));
+                return;
+            }
+        }
+
+        const msg = records.length > 1
+            ? buildMultipleMessage(objectType, records)
+            : buildConfirmMessage(objectType, records[0]);
         await sendToSlack(response_url, msg);
+
     } catch (err) {
         console.error("Search error:", err.response?.data || err.message);
         try { await sendToSlack(response_url, {response_type: "ephemeral", text: `:x: Error: ${err.message}`}); } catch(e) {}
     }
 });
 
-// Interactive button handler
+// ─────────────────────────────────────────
+// INTERACTIVE BUTTON HANDLER
+// ─────────────────────────────────────────
 app.post("/slack/interact", async (req, res) => {
     const payload = JSON.parse(req.body.payload);
     const action = payload.actions[0].value;
     const responseUrl = payload.response_url;
-    const [actionType, recordId, accountName] = action.split("|");
+    const parts = action.split("|");
+    const actionType = parts[0];
+    const recordId = parts[1];
+    const recordName = parts[2];
+    const objectType = parts[3];
 
     if (actionType === "cancel") {
         res.json({
             response_type: "ephemeral",
             replace_original: true,
-            text: `:x: Deletion cancelled. *${accountName}* is safe! :relieved:`,
+            text: `:x: Deletion cancelled. *${recordName}* is safe! :relieved:`,
         });
         return;
     }
@@ -364,21 +482,35 @@ app.post("/slack/interact", async (req, res) => {
     res.json({
         response_type: "ephemeral",
         replace_original: true,
-        text: `:hourglass_flowing_sand: Deleting *${accountName}*...`,
+        text: `:hourglass_flowing_sand: Deleting *${recordName}*...`,
     });
 
     try {
         const token = await getAccessToken();
-        await deleteAccount(recordId, token);
+
+        if (objectType === '/delete-account') {
+            await smartDeleteAccount(recordId, token);
+        } else if (objectType === '/delete-contact') {
+            await deleteContact(recordId, token);
+        } else if (objectType === '/delete-opportunity') {
+            await deleteOpportunity(recordId, token);
+        } else if (objectType === '/delete-lead') {
+            await deleteLead(recordId, token);
+        }
+
+        const objectLabel = objectType.replace('/delete-', '').charAt(0).toUpperCase() +
+                           objectType.replace('/delete-', '').slice(1);
+
         await sendToSlack(responseUrl, {
             response_type: "in_channel",
             replace_original: false,
-            text: `:white_check_mark: *${accountName}* was deleted successfully by <@${payload.user.id}> on ${new Date().toLocaleString('en-IN', {timeZone: 'Asia/Kolkata'})}`,
+            text: `:white_check_mark: *${objectLabel} - ${recordName}* was deleted successfully by <@${payload.user.id}> on ${new Date().toLocaleString('en-IN', {timeZone: 'Asia/Kolkata'})}`,
         });
+
     } catch (err) {
         console.error("Delete error:", err.response?.data || err.message);
         try {
-            let errorMsg = `:x: Could not delete *${accountName}*.`;
+            let errorMsg = `:x: Could not delete *${recordName}*.`;
             const sfErrors = err.response?.data;
             if (Array.isArray(sfErrors) && sfErrors.length > 0) {
                 const raw = sfErrors[0].message || '';
