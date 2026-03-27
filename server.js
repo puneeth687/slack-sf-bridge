@@ -283,15 +283,29 @@ app.post("/slack/interact", async (req, res) => {
             text: `:white_check_mark: *${accountName}* was deleted successfully by <@${payload.user.id}>`,
         });
     } catch (err) {
-        console.error("Delete error:", err.response?.data || err.message);
-        try {
-            await sendToSlack(responseUrl, {
-                response_type: "ephemeral",
-                replace_original: true,
-                text: `:x: Error deleting: ${err.message}`,
-            });
-        } catch (e) {}
-    }
+    console.error('Delete error:', err.response?.data || err.message);
+    try {
+        // Extract clean error message from Salesforce
+        let errorMsg = `:x: Could not delete *${accountName}*.`;
+        
+        const sfErrors = err.response?.data;
+        if (Array.isArray(sfErrors) && sfErrors.length > 0) {
+            const raw = sfErrors[0].message || '';
+            // Extract just the readable lines
+            const lines = raw.split('\n').filter(l => l.trim() !== '');
+            const cleanLines = lines.map(l => `• ${l.trim()}`).join('\n');
+            errorMsg += `\n\n*Reason:*\n${cleanLines}`;
+        } else {
+            errorMsg += `\n\n*Reason:* ${err.message}`;
+        }
+
+        await sendToSlack(responseUrl, {
+            response_type: 'ephemeral',
+            replace_original: true,
+            text: errorMsg
+        });
+    } catch(e) { console.error(e.message); }
+}
 });
 
 app.listen(process.env.PORT || 3000, () => console.log("Server running on port 3000"));
